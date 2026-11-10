@@ -13,11 +13,21 @@ use crate::task::{self, Task};
 pub use raw_window_handle;
 /// Optional native drag transport, negotiated offers and bounded byte I/O.
 pub mod drag_drop;
+/// Focus-scoped compositor shortcut inhibition and actual permission state.
+pub mod keyboard_shortcuts;
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
+/// Request focus-scoped compositor shortcut inhibition. Other backends and
+/// retired windows return None. Observe the guard's actual state before capture.
+pub fn inhibit_keyboard_shortcuts(id:Id)->Task<Option<keyboard_shortcuts::Inhibitor>> {
+    task::oneshot(move |channel|crate::Action::Window(Action::InhibitKeyboardShortcuts(id,channel)))
+}
+
 /// An operation to be performed on some window.
 pub enum Action {
+    /// Request an inhibitor for an ordinary window, when natively supported.
+    InhibitKeyboardShortcuts(Id,oneshot::Sender<Option<keyboard_shortcuts::Inhibitor>>),
     /// Opt in to native data-device transport for an ordinary window.
     EnableDragDrop(Id, oneshot::Sender<Option<drag_drop::DragDrop>>),
     /// Open a new window with some [`Settings`].
