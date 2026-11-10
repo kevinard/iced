@@ -82,6 +82,7 @@ where
                 redraw_at: None,
                 preedit: None,
                 ime_state: None,
+                activation_token: None,
             },
         );
 
@@ -171,6 +172,7 @@ where
     pub surface_version: u64,
     pub renderer: P::Renderer,
     pub redraw_at: Option<Instant>,
+    pub activation_token: Option<(winit::event_loop::AsyncRequestSerial, crate::futures::futures::channel::oneshot::Sender<Option<String>>, Instant)>,
     preedit: Option<Preedit<P::Renderer>>,
     ime_state: Option<(Rectangle, input_method::Purpose)>,
 }

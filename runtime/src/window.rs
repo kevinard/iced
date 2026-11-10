@@ -26,6 +26,9 @@ pub enum Action {
     /// Open a portal dialog with an exported Wayland parent handle and modal hint.
     OpenDialog(Id, Settings, String, bool, Option<String>, oneshot::Sender<Option<Id>>),
 
+    /// Obtain a fresh outgoing token from recent user input, when supported.
+    RequestActivationToken(Id, oneshot::Sender<Option<String>>),
+
     /// Close the window and exits the application.
     Close(Id),
 
@@ -319,6 +322,13 @@ pub fn open_dialog_with_activation(parent_handle: String, modal: bool, activatio
     (id, task::oneshot(move |channel| {
         crate::Action::Window(Action::OpenDialog(id, settings, parent_handle, modal, activation_token, channel))
     }))
+}
+
+/// Requests a token for a subsequent launch from recent input on this window.
+/// Unsupported adapters return `None`. Callers must bound their wait and ignore
+/// late results after their chosen action or request has changed.
+pub fn request_activation_token(id: Id) -> Task<Option<String>> {
+    task::oneshot(move |channel| crate::Action::Window(Action::RequestActivationToken(id, channel)))
 }
 
 /// Closes the window with `id`.

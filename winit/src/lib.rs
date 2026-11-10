@@ -1093,6 +1093,15 @@ async fn run_instance<P>(
                         };
 
                         match window_event {
+                            winit::event::WindowEvent::ActivationTokenDone { serial, token } => {
+                                if window.activation_token.as_ref().is_some_and(|(expected, _, _)| *expected == serial) {
+                                    let (_, channel, at) = window.activation_token.take().expect("matched activation request");
+                                    let value = (at.elapsed() < std::time::Duration::from_secs(1))
+                                        .then(|| token.into_raw());
+                                    let _ = channel.send(value);
+                                }
+                                continue;
+                            }
                             winit::event::WindowEvent::Resized(_) => {
                                 window.raw.request_redraw();
                             }
@@ -1499,6 +1508,17 @@ fn run_action<'a, P, C>(
                     parent: None, foreign_parent: Some((handle, modal, token)),
                 }).expect("Send dialog window control action");
                 *is_window_opening = true;
+            }
+            window::Action::RequestActivationToken(id, channel) => {
+                if let Some(window) = window_manager.get_mut(id) {
+                    if let Some(serial) = transient::activation_token(&window.raw) {
+                        window.activation_token = Some((serial, channel, Instant::now()));
+                    } else {
+                        let _ = channel.send(None);
+                    }
+                } else {
+                    let _ = channel.send(None);
+                }
             }
             window::Action::Close(id) => {
                 let _ = ui_caches.remove(&id);
