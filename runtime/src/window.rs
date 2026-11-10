@@ -19,6 +19,9 @@ pub enum Action {
     /// Open a new window with some [`Settings`].
     Open(Id, Settings, oneshot::Sender<Id>),
 
+    /// Open a portal dialog with an exported Wayland parent handle and modal hint.
+    OpenDialog(Id, Settings, String, bool, Option<String>, oneshot::Sender<Option<Id>>),
+
     /// Close the window and exits the application.
     Close(Id),
 
@@ -278,6 +281,21 @@ pub fn open(settings: Settings) -> (Id, Task<Id>) {
             crate::Action::Window(Action::Open(id, settings, channel))
         }),
     )
+}
+
+/// Opens an out-of-process dialog. The Wayland parent handle excludes the
+/// `wayland:` prefix. Unsupported compositors may display an unparented window;
+/// unsupported adapters return `None` without opening a surface.
+pub fn open_dialog(parent_handle: String, modal: bool, settings: Settings) -> (Id, Task<Option<Id>>) {
+    open_dialog_with_activation(parent_handle, modal, None, settings)
+}
+
+/// Opens a dialog using an incoming startup activation token, when supplied.
+pub fn open_dialog_with_activation(parent_handle: String, modal: bool, activation_token: Option<String>, settings: Settings) -> (Id, Task<Option<Id>>) {
+    let id = Id::unique();
+    (id, task::oneshot(move |channel| {
+        crate::Action::Window(Action::OpenDialog(id, settings, parent_handle, modal, activation_token, channel))
+    }))
 }
 
 /// Closes the window with `id`.

@@ -263,3 +263,6 @@ useless_conversion = "deny"
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "forbid"
+
+[patch.crates-io]
+winit = { git = "https://github.com/kevinard/winit", rev = "021f33898bc98f0c993e4de6738260f208f5b334" }

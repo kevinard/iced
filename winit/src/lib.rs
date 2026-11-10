@@ -31,6 +31,7 @@ pub mod conversion;
 
 mod error;
 mod proxy;
+mod transient;
 mod window;
 
 pub use clipboard::Clipboard;
@@ -304,6 +305,7 @@ where
                                 scale_factor,
                                 monitor,
                                 on_open,
+                                foreign_parent,
                             } => {
                                 let exit_on_close_request =
                                     settings.exit_on_close_request;
@@ -324,6 +326,8 @@ where
                                         self.id.clone(),
                                     )
                                     .with_visible(false);
+
+                                let window_attributes = transient::dialog_attributes(window_attributes, foreign_parent);
 
                                 #[cfg(target_arch = "wasm32")]
                                 let window_attributes = {
@@ -463,13 +467,32 @@ where
 }
 
 #[derive(Debug)]
+enum OpenResponse {
+    Normal(oneshot::Sender<window::Id>),
+    Transient(oneshot::Sender<Option<window::Id>>),
+}
+
+impl OpenResponse {
+    fn opened(self, id: window::Id) {
+        match self {
+            Self::Normal(channel) => {
+                let _ = channel.send(id);
+            }
+            Self::Transient(channel) => {
+                let _ = channel.send(Some(id));
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 enum Event<Message: 'static> {
     WindowCreated {
         id: window::Id,
         window: Arc<winit::window::Window>,
         exit_on_close_request: bool,
         make_visible: bool,
-        on_open: oneshot::Sender<window::Id>,
+        on_open: OpenResponse,
     },
     EventLoopAwakened(winit::event::Event<Message>),
     Exit,
@@ -485,7 +508,8 @@ enum Control {
         settings: window::Settings,
         title: String,
         monitor: Option<winit::monitor::MonitorHandle>,
-        on_open: oneshot::Sender<window::Id>,
+        on_open: OpenResponse,
+        foreign_parent: Option<(String, bool, Option<String>)>,
         scale_factor: f32,
     },
     SetAutomaticWindowTabbing(bool),
@@ -709,7 +733,7 @@ async fn run_instance<P>(
                     clipboard = Clipboard::connect(window.raw.clone());
                 }
 
-                let _ = on_open.send(id);
+                on_open.opened(id);
                 is_window_opening = false;
             }
             Event::EventLoopAwakened(event) => {
@@ -1390,10 +1414,19 @@ fn run_action<'a, P, C>(
                         title: program.title(id),
                         scale_factor: program.scale_factor(id),
                         monitor,
-                        on_open: channel,
+                        on_open: OpenResponse::Normal(channel),
+                        foreign_parent: None,
                     })
                     .expect("Send control action");
 
+                *is_window_opening = true;
+            }
+            window::Action::OpenDialog(id, settings, handle, modal, token, channel) => {
+                control_sender.start_send(Control::CreateWindow {
+                    id, settings, title: program.title(id), scale_factor: program.scale_factor(id),
+                    monitor: window_manager.last_monitor(), on_open: OpenResponse::Transient(channel),
+                    foreign_parent: Some((handle, modal, token)),
+                }).expect("Send dialog window control action");
                 *is_window_opening = true;
             }
             window::Action::Close(id) => {
