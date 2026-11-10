@@ -31,6 +31,7 @@ pub mod conversion;
 
 mod error;
 mod proxy;
+mod drag_drop;
 mod window;
 
 pub use clipboard::Clipboard;
@@ -1380,6 +1381,10 @@ fn run_action<'a, P, C>(
             }
         },
         Action::Window(action) => match action {
+            window::Action::EnableDragDrop(id, reply) => {
+                let endpoint = window_manager.get_mut(id).and_then(|window| drag_drop::enable(&window.raw));
+                let _ = reply.send(endpoint);
+            }
             window::Action::Open(id, settings, channel) => {
                 let monitor = window_manager.last_monitor();
 
