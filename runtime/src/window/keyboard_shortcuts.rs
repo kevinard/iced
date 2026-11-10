@@ -9,6 +9,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+#[path = "keyboard_shortcuts/recording.rs"]
+pub mod recording;
+pub use recording::{
+    CancelReason as RecordingCancelReason, Driver as RecordingDriver, Recording,
+    State as RecordingState,
+};
+
 /// Observed native permission and focus. A successful request is not Active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -27,6 +34,10 @@ pub enum Status {
 pub trait Driver: Send + Sync {
     /// Read the latest actual state without consuming a notification.
     fn status(&self) -> Status;
+    /// Arm an optional source-owned recording attempt under actual protection.
+    fn record(&self) -> Option<Recording> {
+        None
+    }
 }
 struct Inner {
     driver: Box<dyn Driver>,
@@ -53,6 +64,11 @@ impl Inhibitor {
     /// Inspect actual focus and compositor permission.
     pub fn status(&self) -> Status {
         self.0.driver.status()
+    }
+    /// Arm one native recording attempt. A successful inhibition request alone
+    /// does not establish permission; an unavailable or busy source returns None.
+    pub fn record(&self) -> Option<Recording> {
+        self.0.driver.record()
     }
     /// Take the single change stream, starting with the current state.
     pub fn changes(&self) -> Option<BoxStream<'static, Status>> {
