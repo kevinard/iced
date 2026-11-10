@@ -30,6 +30,7 @@ pub mod clipboard;
 pub mod conversion;
 
 mod error;
+mod event_batch;
 mod proxy;
 mod window;
 
@@ -1133,6 +1134,7 @@ async fn run_instance<P>(
                         }
 
                         let mut uis_stale = false;
+                        let mut deferred_events = Vec::new();
 
                         for (id, window) in window_manager.iter_mut() {
                             let interact_span = debug::interact(id);
@@ -1151,42 +1153,66 @@ async fn run_instance<P>(
                                 continue;
                             }
 
-                            let (ui_state, statuses) = user_interfaces
-                                .get_mut(&id)
-                                .expect("Get user interface")
-                                .update(
-                                    &window_events,
-                                    window.state.cursor(),
-                                    &mut window.renderer,
-                                    &mut clipboard,
-                                    &mut messages,
-                                );
+                            let (statuses, remaining) = event_batch::dispatch(
+                                &window_events,
+                                |batch| {
+                                    let (ui_state, statuses) = user_interfaces
+                                        .get_mut(&id)
+                                        .expect("Get user interface")
+                                        .update(
+                                            batch,
+                                            window.state.cursor(),
+                                            &mut window.renderer,
+                                            &mut clipboard,
+                                            &mut messages,
+                                        );
 
-                            #[cfg(feature = "unconditional-rendering")]
-                            window.request_redraw(
-                                window::RedrawRequest::NextFrame,
+                                    #[cfg(feature = "unconditional-rendering")]
+                                    window.request_redraw(
+                                        window::RedrawRequest::NextFrame,
+                                    );
+
+                                    let outdated = matches!(
+                                        ui_state,
+                                        user_interface::State::Outdated
+                                    );
+                                    match ui_state {
+                                        user_interface::State::Updated {
+                                            redraw_request: _redraw_request,
+                                            mouse_interaction,
+                                            ..
+                                        } => {
+                                            window.update_mouse(
+                                                mouse_interaction,
+                                            );
+
+                                            #[cfg(not(
+                                                feature = "unconditional-rendering"
+                                            ))]
+                                            window.request_redraw(
+                                                _redraw_request,
+                                            );
+                                        }
+                                        user_interface::State::Outdated => {
+                                            uis_stale = true;
+                                        }
+                                    }
+
+                                    (outdated, statuses)
+                                },
                             );
-
-                            match ui_state {
-                                user_interface::State::Updated {
-                                    redraw_request: _redraw_request,
-                                    mouse_interaction,
-                                    ..
-                                } => {
-                                    window.update_mouse(mouse_interaction);
-
-                                    #[cfg(not(
-                                        feature = "unconditional-rendering"
-                                    ))]
-                                    window.request_redraw(_redraw_request);
-                                }
-                                user_interface::State::Outdated => {
-                                    uis_stale = true;
-                                }
-                            }
+                            let processed =
+                                window_events.len() - remaining.len();
+                            deferred_events.extend(
+                                remaining
+                                    .iter()
+                                    .cloned()
+                                    .map(|event| (id, event)),
+                            );
 
                             for (event, status) in window_events
                                 .into_iter()
+                                .take(processed)
                                 .zip(statuses.into_iter())
                             {
                                 runtime.broadcast(
@@ -1254,7 +1280,18 @@ async fn run_instance<P>(
                             }
                         }
 
-                        if let Some(redraw_at) = window_manager.redraw_at() {
+                        if !deferred_events.is_empty() {
+                            // Apply messages and rebuild above before replaying this
+                            // older input. Do not broadcast it as ignored or let new
+                            // native events overtake the preserved tail.
+                            deferred_events.append(&mut events);
+                            events = deferred_events;
+                            let _ = control_sender.start_send(
+                                Control::ChangeFlow(ControlFlow::Poll),
+                            );
+                        } else if let Some(redraw_at) =
+                            window_manager.redraw_at()
+                        {
                             let _ =
                                 control_sender.start_send(Control::ChangeFlow(
                                     ControlFlow::WaitUntil(redraw_at),
