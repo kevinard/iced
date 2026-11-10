@@ -19,6 +19,10 @@ pub enum Action {
     /// Open a new window with some [`Settings`].
     Open(Id, Settings, oneshot::Sender<Id>),
 
+    /// Open an auxiliary window above an existing parent before mapping it.
+    /// Returns `None` when the parent is gone or the backend is unsupported.
+    OpenTransient(Id, Settings, Id, oneshot::Sender<Option<Id>>),
+
     /// Close the window and exits the application.
     Close(Id),
 
@@ -276,6 +280,25 @@ pub fn open(settings: Settings) -> (Id, Task<Id>) {
         id,
         task::oneshot(|channel| {
             crate::Action::Window(Action::Open(id, settings, channel))
+        }),
+    )
+}
+
+/// Opens a non-modal auxiliary window attached to an existing parent.
+///
+/// The parent relationship is applied before the first rendered buffer is
+/// attached. The compositor retains control of placement and focus policy.
+/// Returns `None` if the parent has closed or native parenting is unsupported;
+/// no unrelated ordinary window is shown in that case.
+///
+/// Currently supported by the Winit backend on Wayland. Layer surfaces and
+/// other platforms return `None`.
+pub fn open_transient(parent: Id, settings: Settings) -> (Id, Task<Option<Id>>) {
+    let id = Id::unique();
+    (
+        id,
+        task::oneshot(move |channel| {
+            crate::Action::Window(Action::OpenTransient(id, settings, parent, channel))
         }),
     )
 }

@@ -31,6 +31,7 @@ pub mod conversion;
 
 mod error;
 mod proxy;
+mod transient;
 mod window;
 
 pub use clipboard::Clipboard;
@@ -304,6 +305,7 @@ where
                                 scale_factor,
                                 monitor,
                                 on_open,
+                                parent,
                             } => {
                                 let exit_on_close_request =
                                     settings.exit_on_close_request;
@@ -324,6 +326,11 @@ where
                                         self.id.clone(),
                                     )
                                     .with_visible(false);
+
+                                let window_attributes = transient::attributes(
+                                    window_attributes,
+                                    parent,
+                                );
 
                                 #[cfg(target_arch = "wasm32")]
                                 let window_attributes = {
@@ -463,13 +470,32 @@ where
 }
 
 #[derive(Debug)]
+enum OpenResponse {
+    Normal(oneshot::Sender<window::Id>),
+    Transient(oneshot::Sender<Option<window::Id>>),
+}
+
+impl OpenResponse {
+    fn opened(self, id: window::Id) {
+        match self {
+            Self::Normal(channel) => {
+                let _ = channel.send(id);
+            }
+            Self::Transient(channel) => {
+                let _ = channel.send(Some(id));
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 enum Event<Message: 'static> {
     WindowCreated {
         id: window::Id,
         window: Arc<winit::window::Window>,
         exit_on_close_request: bool,
         make_visible: bool,
-        on_open: oneshot::Sender<window::Id>,
+        on_open: OpenResponse,
     },
     EventLoopAwakened(winit::event::Event<Message>),
     Exit,
@@ -485,7 +511,8 @@ enum Control {
         settings: window::Settings,
         title: String,
         monitor: Option<winit::monitor::MonitorHandle>,
-        on_open: oneshot::Sender<window::Id>,
+        on_open: OpenResponse,
+        parent: Option<Arc<winit::window::Window>>,
         scale_factor: f32,
     },
     SetAutomaticWindowTabbing(bool),
@@ -709,7 +736,7 @@ async fn run_instance<P>(
                     clipboard = Clipboard::connect(window.raw.clone());
                 }
 
-                let _ = on_open.send(id);
+                on_open.opened(id);
                 is_window_opening = false;
             }
             Event::EventLoopAwakened(event) => {
@@ -1390,10 +1417,37 @@ fn run_action<'a, P, C>(
                         title: program.title(id),
                         scale_factor: program.scale_factor(id),
                         monitor,
-                        on_open: channel,
+                        on_open: OpenResponse::Normal(channel),
+                        parent: None,
                     })
                     .expect("Send control action");
 
+                *is_window_opening = true;
+            }
+            window::Action::OpenTransient(id, settings, parent, channel) => {
+                let Some(parent) = window_manager
+                    .get_mut(parent)
+                    .map(|window| window.raw.clone())
+                else {
+                    let _ = channel.send(None);
+                    return;
+                };
+                if !transient::supported(&parent) {
+                    let _ = channel.send(None);
+                    return;
+                }
+                let monitor = parent.current_monitor();
+                control_sender
+                    .start_send(Control::CreateWindow {
+                        id,
+                        settings,
+                        title: program.title(id),
+                        scale_factor: program.scale_factor(id),
+                        monitor,
+                        on_open: OpenResponse::Transient(channel),
+                        parent: Some(parent),
+                    })
+                    .expect("Send transient window control action");
                 *is_window_opening = true;
             }
             window::Action::Close(id) => {
