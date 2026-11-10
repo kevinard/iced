@@ -11,11 +11,15 @@ use crate::futures::futures::channel::oneshot;
 use crate::task::{self, Task};
 
 pub use raw_window_handle;
+/// Optional native drag transport, negotiated offers and bounded byte I/O.
+pub mod drag_drop;
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 /// An operation to be performed on some window.
 pub enum Action {
+    /// Opt in to native data-device transport for an ordinary window.
+    EnableDragDrop(Id, oneshot::Sender<Option<drag_drop::DragDrop>>),
     /// Open a new window with some [`Settings`].
     Open(Id, Settings, oneshot::Sender<Id>),
 
