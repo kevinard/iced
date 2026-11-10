@@ -307,6 +307,7 @@ where
                                 monitor,
                                 on_open,
                                 parent,
+                                foreign_parent,
                             } => {
                                 let exit_on_close_request =
                                     settings.exit_on_close_request;
@@ -332,6 +333,7 @@ where
                                     window_attributes,
                                     parent,
                                 );
+                                let window_attributes = transient::dialog_attributes(window_attributes, foreign_parent);
 
                                 #[cfg(target_arch = "wasm32")]
                                 let window_attributes = {
@@ -514,6 +516,7 @@ enum Control {
         monitor: Option<winit::monitor::MonitorHandle>,
         on_open: OpenResponse,
         parent: Option<Arc<winit::window::Window>>,
+        foreign_parent: Option<(String, bool, Option<String>)>,
         scale_factor: f32,
     },
     SetAutomaticWindowTabbing(bool),
@@ -1456,6 +1459,7 @@ fn run_action<'a, P, C>(
                         monitor,
                         on_open: OpenResponse::Normal(channel),
                         parent: None,
+                        foreign_parent: None,
                     })
                     .expect("Send control action");
 
@@ -1483,8 +1487,17 @@ fn run_action<'a, P, C>(
                         monitor,
                         on_open: OpenResponse::Transient(channel),
                         parent: Some(parent),
+                        foreign_parent: None,
                     })
                     .expect("Send transient window control action");
+                *is_window_opening = true;
+            }
+            window::Action::OpenDialog(id, settings, handle, modal, token, channel) => {
+                control_sender.start_send(Control::CreateWindow {
+                    id, settings, title: program.title(id), scale_factor: program.scale_factor(id),
+                    monitor: window_manager.last_monitor(), on_open: OpenResponse::Transient(channel),
+                    parent: None, foreign_parent: Some((handle, modal, token)),
+                }).expect("Send dialog window control action");
                 *is_window_opening = true;
             }
             window::Action::Close(id) => {
