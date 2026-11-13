@@ -265,4 +265,4 @@ useless_conversion = "deny"
 broken_intra_doc_links = "forbid"
 
 [patch.crates-io]
-winit = { git = "https://github.com/kevinard/winit", rev = "5bbfe4f201cc538e426c5ca9bbf4842add9fd870" }
+winit = { git = "https://github.com/kevinard/winit", rev = "97d7209e19ba2e7599c7044048b5b8489736b712" }
