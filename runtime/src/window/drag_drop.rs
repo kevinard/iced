@@ -96,6 +96,44 @@ pub trait Driver: Send + Sync {
         contents: Vec<Content>,
         actions: Actions,
     ) -> Result<Source, String>;
+    /// Start as [`Driver::start`], showing `icon` under the pointer where the
+    /// backend can. Backends without drag icons start without one.
+    fn start_with_icon(
+        &self,
+        origin: Origin,
+        contents: Vec<Content>,
+        actions: Actions,
+        icon: Option<Icon>,
+    ) -> Result<Source, String> {
+        let _ = icon;
+        self.start(origin, contents, actions)
+    }
+}
+
+#[derive(Clone)]
+/// A picture that follows the pointer during a drag: straight RGBA rows of
+/// `width` by `height` buffer pixels, `scale` buffer pixels per logical
+/// pixel, and the logical `hotspot` that sits under the pointer.
+pub struct Icon {
+    /// Width in buffer pixels.
+    pub width: u32,
+    /// Height in buffer pixels.
+    pub height: u32,
+    /// Buffer pixels per logical pixel.
+    pub scale: u32,
+    /// Straight (not premultiplied) RGBA bytes, row by row.
+    pub rgba: Arc<[u8]>,
+    /// The logical point of the picture under the pointer.
+    pub hotspot: (i32, i32),
+}
+impl fmt::Debug for Icon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Drag icon")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("scale", &self.scale)
+            .finish()
+    }
 }
 
 /// Exact native input capability, invalidated by release or a newer press.
@@ -249,6 +287,17 @@ impl DragDrop {
         actions: Actions,
     ) -> Result<Source, String> {
         self.driver.start(origin, contents, actions)
+    }
+    /// Start as [`DragDrop::start`], with `icon` under the pointer where the
+    /// platform can show one.
+    pub fn start_with_icon(
+        &self,
+        origin: Origin,
+        contents: Vec<Content>,
+        actions: Actions,
+        icon: Option<Icon>,
+    ) -> Result<Source, String> {
+        self.driver.start_with_icon(origin, contents, actions, icon)
     }
     /// Take the endpoint's single coalesced notice stream. Poll state after each wake.
     pub fn take_notices(&self) -> Option<mpsc::Receiver<()>> {

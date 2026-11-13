@@ -82,6 +82,16 @@ mod wayland {
             contents: Vec<exchange::Content>,
             supported: exchange::Actions,
         ) -> Result<exchange::Source, String> {
+            self.start_with_icon(origin, contents, supported, None)
+        }
+
+        fn start_with_icon(
+            &self,
+            origin: exchange::Origin,
+            contents: Vec<exchange::Content>,
+            supported: exchange::Actions,
+            icon: Option<exchange::Icon>,
+        ) -> Result<exchange::Source, String> {
             if contents.is_empty()
                 || contents.len() > 32
                 || contents
@@ -145,7 +155,20 @@ mod wayland {
                 .ok_or_else(|| "The drag origin belongs to another backend".to_owned())?;
             let source = self
                 .endpoint
-                .start(origin, formats, actions(supported), send)
+                .start_with_icon(
+                    origin,
+                    formats,
+                    actions(supported),
+                    send,
+                    icon.map(|icon| native::DragIcon {
+                        width: icon.width,
+                        height: icon.height,
+                        scale: icon.scale,
+                        rgba: icon.rgba.to_vec(),
+                        hotspot: icon.hotspot,
+                    })
+                    .as_ref(),
+                )
                 .map_err(|e| e.to_string())?;
             *shared.source.lock().unwrap() = Some(source.clone());
             Ok(exchange::Source::new(Source { source, shared }))
