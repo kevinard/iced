@@ -417,6 +417,12 @@ where
         let text = state.value.raw();
         let (cursor_x, scroll_offset) =
             measure_cursor_and_scroll_offset(text, text_bounds, caret_index);
+        let scroll_offset = visible_offset(
+            text.min_width(),
+            text_bounds.width,
+            state.scroll_offset,
+            scroll_offset,
+        );
 
         let alignment_offset = alignment_offset(
             text_bounds.width,
@@ -583,6 +589,23 @@ where
             (None, 0.0, false)
         };
 
+        let offset = visible_offset(
+            state.value.raw().min_width(),
+            text_bounds.width,
+            state.scroll_offset,
+            offset,
+        );
+
+        // A caret scrolled out of view by the mouse wheel is not drawn
+        let cursor = cursor.filter(|(quad, _)| {
+            is_selecting || state.scroll_offset.is_none() || {
+                let x = quad.bounds.x - offset;
+
+                x + 1.0 >= text_bounds.x
+                    && x <= text_bounds.x + text_bounds.width
+            }
+        });
+
         let draw = |renderer: &mut Renderer, viewport| {
             let paragraph = if text.is_empty()
                 && state
@@ -702,7 +725,9 @@ where
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        let update_cache = |state, value| {
+        let update_cache = |state: &mut State<Renderer::Paragraph>, value| {
+            state.scroll_offset = None;
+
             replace_paragraph(
                 renderer,
                 state,
@@ -719,6 +744,7 @@ where
             | Event::Touch(touch::Event::FingerPressed { .. }) => {
                 let state = state::<Renderer>(tree);
                 let cursor_before = state.cursor;
+                let was_focused = state.is_focused.is_some();
 
                 let click_position = cursor.position_over(layout.bounds());
 
@@ -824,6 +850,49 @@ where
 
                     shell.capture_event();
                 }
+
+                if (click_position.is_some() || was_focused)
+                    && state.scroll_offset.take().is_some()
+                {
+                    shell.request_redraw();
+                }
+            }
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                let state = state::<Renderer>(tree);
+
+                if cursor.is_over(layout.bounds())
+                    && let Some(delta) =
+                        horizontal_scroll(*delta, state.keyboard_modifiers)
+                {
+                    let text_bounds =
+                        layout.children().next().unwrap().bounds();
+
+                    // The offset currently drawn
+                    let current = if state.scroll_offset.is_none()
+                        && state
+                            .is_focused
+                            .as_ref()
+                            .is_some_and(|focus| !focus.is_window_focused)
+                    {
+                        0.0
+                    } else {
+                        offset(text_bounds, &self.value, state)
+                    };
+
+                    if let Some(scrolled) = scrolled_offset(
+                        state.value.raw().min_width(),
+                        text_bounds.width,
+                        current,
+                        delta,
+                    ) {
+                        if scrolled != current {
+                            state.scroll_offset = Some(scrolled);
+                            shell.request_redraw();
+                        }
+
+                        shell.capture_event();
+                    }
+                }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
             | Event::Touch(touch::Event::FingerLifted { .. })
@@ -906,6 +975,13 @@ where
                 ..
             }) => {
                 let state = state::<Renderer>(tree);
+
+                if state.is_focused.is_some()
+                    && !is_modifier(key)
+                    && state.scroll_offset.take().is_some()
+                {
+                    shell.request_redraw();
+                }
 
                 if let Some(focus) = &mut state.is_focused {
                     let modifiers = state.keyboard_modifiers;
@@ -1469,6 +1545,10 @@ pub struct State<P: text::Paragraph> {
     last_click: Option<mouse::Click>,
     cursor: Cursor,
     keyboard_modifiers: keyboard::Modifiers,
+    /// The horizontal offset chosen with the mouse wheel, replacing the
+    /// offset that follows the caret until the next edit, caret movement,
+    /// click or focus change.
+    scroll_offset: Option<f32>,
     // TODO: Add stateful horizontal scrolling offset
 }
 
@@ -1523,31 +1603,34 @@ impl<P: text::Paragraph> State<P> {
     /// Unfocuses the [`TextInput`].
     pub fn unfocus(&mut self) {
         self.is_focused = None;
+        self.scroll_offset = None;
     }
 
     /// Moves the [`Cursor`] of the [`TextInput`] to the front of the input text.
     pub fn move_cursor_to_front(&mut self) {
-        self.cursor.move_to(0);
+        self.move_cursor_to(0);
     }
 
     /// Moves the [`Cursor`] of the [`TextInput`] to the end of the input text.
     pub fn move_cursor_to_end(&mut self) {
-        self.cursor.move_to(usize::MAX);
+        self.move_cursor_to(usize::MAX);
     }
 
     /// Moves the [`Cursor`] of the [`TextInput`] to an arbitrary location.
     pub fn move_cursor_to(&mut self, position: usize) {
         self.cursor.move_to(position);
+        self.scroll_offset = None;
     }
 
     /// Selects all the content of the [`TextInput`].
     pub fn select_all(&mut self) {
-        self.cursor.select_range(0, usize::MAX);
+        self.select_range(0, usize::MAX);
     }
 
     /// Selects the given range of the content of the [`TextInput`].
     pub fn select_range(&mut self, start: usize, end: usize) {
         self.cursor.select_range(start, end);
+        self.scroll_offset = None;
     }
 }
 
@@ -1600,6 +1683,19 @@ fn offset<P: text::Paragraph>(
     value: &Value,
     state: &State<P>,
 ) -> f32 {
+    visible_offset(
+        state.value.raw().min_width(),
+        text_bounds.width,
+        state.scroll_offset,
+        caret_offset(text_bounds, value, state),
+    )
+}
+
+fn caret_offset<P: text::Paragraph>(
+    text_bounds: Rectangle,
+    value: &Value,
+    state: &State<P>,
+) -> f32 {
     if state.is_focused() {
         let cursor = state.cursor();
 
@@ -1629,9 +1725,108 @@ fn measure_cursor_and_scroll_offset(
         .grapheme_position(0, cursor_index)
         .unwrap_or(Point::ORIGIN);
 
-    let offset = ((grapheme_position.x + 5.0) - text_bounds.width).max(0.0);
+    let offset =
+        ((grapheme_position.x + CARET_MARGIN) - text_bounds.width).max(0.0);
 
     (grapheme_position.x, offset)
+}
+
+/// The space kept after the caret when the visible text follows it.
+const CARET_MARGIN: f32 = 5.0;
+
+/// The pixels scrolled per line of a [`mouse::ScrollDelta::Lines`], as in
+/// a scrollable.
+const PIXELS_PER_LINE: f32 = 60.0;
+
+/// Returns the horizontal offset to draw: the offset chosen with the mouse
+/// wheel while the text is wider than the field, or else the offset that
+/// follows the caret.
+fn visible_offset(
+    text_width: f32,
+    bounds_width: f32,
+    scroll_offset: Option<f32>,
+    caret_offset: f32,
+) -> f32 {
+    let overflow = text_width - bounds_width;
+
+    match scroll_offset {
+        Some(offset) if overflow > 0.0 => {
+            offset.clamp(0.0, overflow + CARET_MARGIN)
+        }
+        _ => caret_offset,
+    }
+}
+
+/// Scrolls the `current` horizontal offset by `delta` pixels (positive
+/// towards the end of the text), between the start of the text and the
+/// point where its end meets the end of the field.
+///
+/// Returns `None` when the text fits in the field.
+fn scrolled_offset(
+    text_width: f32,
+    bounds_width: f32,
+    current: f32,
+    delta: f32,
+) -> Option<f32> {
+    let overflow = text_width - bounds_width;
+
+    // The caret margin may already show slightly past the end of the text;
+    // scrolling towards the end never moves the text backwards.
+    (overflow > 0.0)
+        .then(|| (current + delta).clamp(0.0, overflow.max(current)))
+}
+
+/// Returns the horizontal part of a wheel or touchpad scroll in pixels
+/// (positive towards the end of the text), as a scrollable reads it:
+/// Shift turns a vertical wheel into a horizontal one.
+///
+/// Returns `None` unless the horizontal movement dominates, so mostly
+/// vertical scrolling reaches an enclosing scrollable.
+fn horizontal_scroll(
+    delta: mouse::ScrollDelta,
+    modifiers: keyboard::Modifiers,
+) -> Option<f32> {
+    let (x, y) = match delta {
+        mouse::ScrollDelta::Lines { x, y } => {
+            let is_shift_pressed = modifiers.shift();
+
+            // macOS automatically inverts the axes when Shift is pressed
+            let (x, y) = if cfg!(target_os = "macos") && is_shift_pressed {
+                (y, x)
+            } else {
+                (x, y)
+            };
+
+            let (x, y) = if is_shift_pressed { (y, x) } else { (x, y) };
+
+            (x * PIXELS_PER_LINE, y * PIXELS_PER_LINE)
+        }
+        mouse::ScrollDelta::Pixels { x, y } => (x, y),
+    };
+
+    (x.abs() > y.abs()).then_some(-x)
+}
+
+fn is_modifier(key: &keyboard::Key) -> bool {
+    matches!(
+        key,
+        keyboard::Key::Named(
+            key::Named::Alt
+                | key::Named::AltGraph
+                | key::Named::CapsLock
+                | key::Named::Control
+                | key::Named::Fn
+                | key::Named::FnLock
+                | key::Named::NumLock
+                | key::Named::ScrollLock
+                | key::Named::Shift
+                | key::Named::Symbol
+                | key::Named::SymbolLock
+                | key::Named::Meta
+                | key::Named::Hyper
+                | key::Named::Super
+        )
+    )
 }
 
 /// Computes the position of the text cursor at the given X coordinate of
@@ -1811,5 +2006,117 @@ fn alignment_offset(
             }
             alignment::Horizontal::Right => text_bounds_width - text_min_width,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHIFT: keyboard::Modifiers = keyboard::Modifiers::SHIFT;
+    const NONE: keyboard::Modifiers = keyboard::Modifiers::empty();
+
+    #[test]
+    fn horizontal_lines_scroll_by_line_steps() {
+        let delta = mouse::ScrollDelta::Lines { x: -1.0, y: 0.0 };
+
+        assert_eq!(horizontal_scroll(delta, NONE), Some(PIXELS_PER_LINE));
+    }
+
+    #[test]
+    fn horizontal_pixels_scroll_by_their_amount() {
+        let delta = mouse::ScrollDelta::Pixels { x: -12.5, y: 3.0 };
+
+        assert_eq!(horizontal_scroll(delta, NONE), Some(12.5));
+    }
+
+    #[test]
+    fn vertical_wheel_is_ignored_without_shift() {
+        let delta = mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 };
+
+        assert_eq!(horizontal_scroll(delta, NONE), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn shift_turns_vertical_wheel_horizontal() {
+        let delta = mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 };
+
+        assert_eq!(horizontal_scroll(delta, SHIFT), Some(PIXELS_PER_LINE));
+    }
+
+    #[test]
+    fn mostly_vertical_touchpad_scroll_is_ignored() {
+        let delta = mouse::ScrollDelta::Pixels { x: 2.0, y: -20.0 };
+
+        assert_eq!(horizontal_scroll(delta, NONE), None);
+        assert_eq!(horizontal_scroll(delta, SHIFT), None);
+    }
+
+    #[test]
+    fn fitting_text_does_not_scroll() {
+        assert_eq!(scrolled_offset(80.0, 100.0, 0.0, 30.0), None);
+        assert_eq!(scrolled_offset(100.0, 100.0, 0.0, 30.0), None);
+    }
+
+    #[test]
+    fn scrolling_is_clamped_to_the_text() {
+        assert_eq!(scrolled_offset(300.0, 100.0, 0.0, 30.0), Some(30.0));
+        assert_eq!(scrolled_offset(300.0, 100.0, 190.0, 30.0), Some(200.0));
+        assert_eq!(scrolled_offset(300.0, 100.0, 10.0, -30.0), Some(0.0));
+    }
+
+    #[test]
+    fn scrolling_towards_the_end_never_moves_backwards() {
+        // The caret at the end keeps a margin past the end of the text
+        let caret_offset = 200.0 + CARET_MARGIN;
+
+        assert_eq!(
+            scrolled_offset(300.0, 100.0, caret_offset, 30.0),
+            Some(caret_offset)
+        );
+        assert_eq!(
+            scrolled_offset(300.0, 100.0, caret_offset, -30.0),
+            Some(caret_offset - 30.0)
+        );
+    }
+
+    #[test]
+    fn scroll_offset_replaces_caret_offset_while_text_overflows() {
+        assert_eq!(visible_offset(300.0, 100.0, None, 42.0), 42.0);
+        assert_eq!(visible_offset(300.0, 100.0, Some(120.0), 42.0), 120.0);
+    }
+
+    #[test]
+    fn scroll_offset_follows_changed_text() {
+        // The text became shorter, but still overflows
+        assert_eq!(
+            visible_offset(150.0, 100.0, Some(120.0), 0.0),
+            50.0 + CARET_MARGIN
+        );
+
+        // The text now fits: the caret offset applies again
+        assert_eq!(visible_offset(90.0, 100.0, Some(120.0), 0.0), 0.0);
+    }
+
+    #[test]
+    fn caret_movement_drops_scroll_offset() {
+        let mut state = State::<()>::new();
+
+        state.scroll_offset = Some(10.0);
+        state.move_cursor_to(1);
+        assert_eq!(state.scroll_offset, None);
+
+        state.scroll_offset = Some(10.0);
+        state.select_all();
+        assert_eq!(state.scroll_offset, None);
+
+        state.scroll_offset = Some(10.0);
+        state.focus();
+        assert_eq!(state.scroll_offset, None);
+
+        state.scroll_offset = Some(10.0);
+        state.unfocus();
+        assert_eq!(state.scroll_offset, None);
     }
 }
